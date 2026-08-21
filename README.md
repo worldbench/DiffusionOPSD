@@ -152,7 +152,7 @@ Eight-GPU profiles; initialization, calibration, and evaluation are excluded.
 | Z-Image-Turbo | **DiffusionOPSD** | **674.0** | 61.5 GB | **149.8** | **0.37×** |
 
 <p align="center">
-  <img src="assets/robustness.png" width="100%" alt="Robustness and multi-reward diagnostics">
+  <img src="assets/robustness.png" width="100%" alt="Shared-reference gain, terminal stability, and multi-reward composite">
 </p>
 
 <table>
