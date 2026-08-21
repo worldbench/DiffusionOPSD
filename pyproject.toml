@@ -52,11 +52,8 @@ Documentation = "https://diffusionopsd.github.io/"
 Repository = "https://github.com/worldbench/DiffusionOPSD"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["diffusionopsd*"]
+packages = ["diffusionopsd", "diffusionopsd.diffusers_patch"]
+package-dir = {diffusionopsd = "src"}
 
 [tool.ruff]
 line-length = 120

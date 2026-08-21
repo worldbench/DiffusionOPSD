@@ -18,8 +18,7 @@ import tempfile
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-CORE_ROOT = SRC_ROOT / "diffusionopsd"
-sys.path.insert(0, str(SRC_ROOT))
+CORE_ROOT = SRC_ROOT
 sys.path.insert(0, str(ROOT))
 
 PUBLIC_REWARDS = ("hpsv2", "clipscore", "pickscore", "aesthetic", "imagereward", "hpsv3", "deqa")
@@ -452,7 +451,7 @@ def assert_opd_configs() -> None:
     ):
         assert heading in readme_text, f"OPD README lost merged section: {heading}"
     for source_path in (ROOT / "opd").rglob("*"):
-        if source_path.is_file():
+        if source_path.is_file() and source_path.suffix in {".md", ".py", ".sh"}:
             assert "OPD.md" not in source_path.read_text(encoding="utf-8"), (
                 f"stale OPD.md reference in {source_path.relative_to(ROOT)}"
             )
@@ -665,7 +664,8 @@ def assert_readme_results() -> None:
 def assert_release_hygiene() -> None:
     """Reject generated artifacts, private paths, credentials, and local storage names."""
 
-    assert CORE_ROOT.is_dir(), "missing src/diffusionopsd package"
+    assert CORE_ROOT.is_dir(), "missing flat src package"
+    assert not (CORE_ROOT / "diffusionopsd").exists(), "nested src/diffusionopsd package remains"
     assert not (ROOT / "flow_grpo").exists(), "legacy flow_grpo package remains in release"
 
     def release_paths():

@@ -10,7 +10,7 @@ InternLM2-20B). It is shown TWO images for the same prompt — [generated, refer
 "is the first image better than the second? 是/否". The reward is **P(是/yes)** =
 softmax(logit[是], logit[否])[是] at the final token, i.e. P(generated > reference).
 
-Gradient mechanism is IDENTICAL to the pointwise scorer (src/diffusionopsd/internvl_t2i_scorer.py): a
+Gradient mechanism is IDENTICAL to the pointwise scorer (src/internvl_t2i_scorer.py): a
 MANUAL differentiable InternVL forward — `extract_feature(pixel_values)` → scatter ViT embeds
 into the `<IMG_CONTEXT>` slots → `language_model(inputs_embeds=…)` → read the yes/no logits →
 softmax. Gradient flows reward → yes/no logit → LM → vit_embeds → pixel_values → IMAGE. Model

@@ -115,7 +115,7 @@ def sd3_velocity(transformer, latents, sigma, prompt_embeds, pooled_prompt_embed
 
 def flow_transition_mean(latents, velocity, sigmas, index, eta=0.0):
     """One flow step's TRANSITION MEAN — mirrors flow_grpo_step's ``prev_sample_mean`` EXACTLY
-    (src/diffusionopsd/diffusers_patch/solver.py L103-106). eta=0 => deterministic Euler mean
+    (src/diffusers_patch/solver.py L103-106). eta=0 => deterministic Euler mean
     ``latents + velocity*dt``. DiffusionOPD distills THIS (the transition mean), not the raw
     velocity: since mean_s - mean_t = (v_s - v_t)*dt, matching the mean applies the physically
     correct per-step ``dt**2`` weighting (velocity-MSE weights every step uniformly, which is wrong)."""

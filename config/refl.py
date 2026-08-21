@@ -1,7 +1,7 @@
 """Paper-matched ReFL configurations for the seven public evaluators.
 
 The internal AltCLIP/VLM evaluator variants are intentionally not exposed by
-the public launcher; their adapters remain annotated in ``src/diffusionopsd/``.
+the public launcher; their adapters remain annotated in ``src/``.
 """
 
 from __future__ import annotations

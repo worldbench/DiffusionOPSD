@@ -519,7 +519,7 @@ Canonical DiffusionOPSD defaults live in `config/opsd_defaults.py`:
 ├── data/
 │   ├── pickapic_recipe.json # exact paper-split reconstruction recipe
 │   └── drawbench/           # fixed 1,000-prompt held-out manifest
-├── src/diffusionopsd/
+├── src/
 │   ├── diffusers_patch/     # samplers, log-prob utilities, Z-Image rollout
 │   ├── rewards.py           # reward registry
 │   ├── metrics.py           # shared WandB → metrics.jsonl instrumentation
@@ -539,7 +539,6 @@ Canonical DiffusionOPSD defaults live in `config/opsd_defaults.py`:
 │   └── native_eval.py
 ├── opd/                     # DanceOPD, DiffusionOPD, FlowOPD
 ├── LICENSE
-├── NOTICE
 └── pyproject.toml
 ```
 
