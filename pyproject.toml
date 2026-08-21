@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffusionopsd"
+version = "0.1.0"
+description = "On-policy self-distillation for reward-guided diffusion post-training"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "DiffusionOPSD Team"}]
+dependencies = [
+  "absl-py",
+  "accelerate>=1.4",
+  "datasets>=3.3",
+  "diffusers>=0.36.0",
+  # Transformers 4.51 requires the pre-1.0 Hub API. Keep the upper bound
+  # explicit so a later unrelated pip install cannot break model imports.
+  "huggingface-hub>=0.30,<1.0",
+  "ml-collections",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "peft>=0.10",
+  "pillow>=10.4",
+  "scipy>=1.15",
+  "torch>=2.6",
+  "torchvision>=0.21",
+  "tqdm>=4.67",
+  # HPSv3 checkpoints use the pre-4.57 Qwen2-VL state-dict layout. 4.51.x is
+  # also new enough for Z-Image and is the release's validated common stack.
+  "transformers>=4.51,<4.52",
+  "wandb>=0.18",
+]
+
+[project.optional-dependencies]
+rewards = [
+  "fairscale==0.4.13",
+  "open-clip-torch>=2.31",
+  # Transformers 4.51 imports its timm wrapper while resolving AutoModel.
+  # ImageReward's old package metadata pins timm 0.6.13, so install
+  # ImageReward itself with --no-deps as documented in README.md.
+  "timm>=1.0",
+]
+dev = [
+  "pytest>=8.2",
+  "ruff>=0.8",
+]
+[project.urls]
+Homepage = "https://diffusionopsd.github.io/"
+Documentation = "https://diffusionopsd.github.io/"
+Repository = "https://github.com/worldbench/DiffusionOPSD"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["diffusionopsd*"]
+
+[tool.ruff]
+line-length = 120
