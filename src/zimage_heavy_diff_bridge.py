@@ -5,7 +5,7 @@ Purpose
 The Z-Image OPSD/ReFL trainers need the reward as a *differentiable* function of the locally
 decoded image: they backprop the reward gradient into the policy (OPSD reward-gradient target
 ascent / ReFL direct reward-gradient step). Co-located on every policy GPU this fits the light
-scorers (hpsv2/clip/pick/aes/altclip/imagereward) next to the 6 B Z-Image DiT, but the heavy VLM
+scorers next to the 6 B Z-Image DiT, but the heavy public VLM
 rewards OOM on the BACKWARD: hpsv3 (Qwen2-VL-7B + ranknet, ~14 GB bf16) and deqa (mPLUG-Owl2-8B,
 ~16 GB bf16) blow up when autograd retains the 7 B/8 B activations for the gradient-to-image next
 to the 6 B DiT. This module hosts the heavy scorer on a dedicated SERVER rank (its own single GPU)
@@ -21,8 +21,7 @@ in behind that flag, so co-located (light-reward) runs are byte-for-byte unchang
 
 This is the DIFFERENTIABLE analogue of zimage_reward_bridge (forward-only, for the nft/flowgrpo
 baselines that never backprop the reward). It reuses the single-GPU heavy layout of
-zimage_reward_bridge and the differentiable transport protocol of internvl_bridge (dropping
-internvl's 2-GPU shard + pairwise commands: pointwise, single-GPU only).
+zimage_reward_bridge with a differentiable transport protocol.
 
 Two process groups
 -------------------
@@ -52,10 +51,9 @@ import torch
 import torch.distributed as dist
 
 # --- control-protocol constants (header = int64[5] = [cmd, B, C, H, W]) -------------------------
-# Command numbering follows internvl_bridge (the differentiable template): SHUTDOWN=0, GRAD=1, FWD=2.
 CMD_SHUTDOWN = 0    # policy rank is done; server exits after all policy ranks send this
-CMD_SCORE_GRAD = 1  # pointwise: reward [B] AND d(reward_b)/d(image[b]) [B,C,H,W]  (OPSD/ReFL grad)
-CMD_SCORE_FWD = 2   # pointwise: reward [B] only (no autograd) — cheap rollout/eval scoring
+CMD_SCORE_GRAD = 1  # reward [B] AND d(reward_b)/d(image[b]) [B,C,H,W]  (OPSD/ReFL grad)
+CMD_SCORE_FWD = 2   # reward [B] only (no autograd) — cheap rollout/eval scoring
 _HEADER_LEN = 5
 
 # --- module state (populated by make_bridge_groups; None => bridge inactive) --------------------
@@ -67,8 +65,7 @@ _LOCK = threading.Lock()      # serialises a client request so it is atomic on t
 
 
 def zimage_heavy_diff_bridge_enabled() -> bool:
-    """True iff ZIMAGE_HEAVY_DIFF_BRIDGE=1. Distinct from ZIMAGE_HEAVY_BRIDGE (forward-only) and
-    INTERNVL_BRIDGE (26 B) so the three bridges never collide on one flag."""
+    """True iff ZIMAGE_HEAVY_DIFF_BRIDGE=1."""
     return os.environ.get("ZIMAGE_HEAVY_DIFF_BRIDGE", "0") == "1"
 
 
@@ -111,8 +108,8 @@ def make_bridge_groups(world_size: int):
 
 def bridge_server_devices(local_rank: int) -> List[int]:
     """GPU index(es) the server hosts the scorer on. Default single [local_rank] — a 7 B/8 B scorer
-    in bf16 (~14-16 GB) fits on one 80 GB card (unlike the 26 B internvl 2-GPU server). Overridable
-    via ZIMAGE_HEAVY_DIFF_BRIDGE_SERVER_DEVICES="6,7"."""
+    in bf16 (~14-16 GB) fits on one 80 GB card. Overridable via
+    ZIMAGE_HEAVY_DIFF_BRIDGE_SERVER_DEVICES="6,7"."""
     env = os.environ.get("ZIMAGE_HEAVY_DIFF_BRIDGE_SERVER_DEVICES", "")
     if env.strip():
         return [int(x) for x in env.split(",") if x.strip() != ""]

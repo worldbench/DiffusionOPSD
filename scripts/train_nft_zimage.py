@@ -33,7 +33,6 @@ import numpy as np
 import diffusionopsd.rewards
 from diffusionopsd import profiling  # paper efficiency-profiling harness (env PROFILE=1)
 from diffusionopsd.zimage_reward_bridge import zimage_bridge_enabled  # ZIMAGE_HEAVY_BRIDGE reward server (gated)
-from diffusionopsd.internvl_bridge import bridge_enabled as internvl_bridge_enabled  # INTERNVL_BRIDGE 2-GPU 26B reward server (gated; forward-only for nft)
 from diffusionopsd.stat_tracking import PerPromptStatTracker, calculate_prompt_group_dispersion
 from diffusionopsd.diffusers_patch.zimage_pipeline_with_rollout import (
     zimage_encode_prompt, zimage_rollout, zimage_v,
@@ -62,7 +61,9 @@ from torch.cuda.amp import GradScaler, autocast as torch_autocast
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
-config_flags.DEFINE_config_file("config", "config/zimage.py", "Training configuration.")
+config_flags.DEFINE_config_file(
+    "config", "config/zimage.py:zimg_nft_hpsv2", "Training configuration."
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -120,11 +121,7 @@ class TextPromptDataset(Dataset):
         return len(self.prompts)
 
     def __getitem__(self, idx):
-        line = self.prompts[idx]
-        if "\t" in line:  # internvl_dual: "prompt<TAB>ref_path" -> carry the reference in metadata
-            prompt, ref_path = line.split("\t", 1)
-            return {"prompt": prompt, "metadata": {"ref_path": ref_path}}
-        return {"prompt": line, "metadata": {}}
+        return {"prompt": self.prompts[idx], "metadata": {}}
 
     @staticmethod
     def collate_fn(examples):
@@ -300,9 +297,7 @@ def main(_):
     # are the policy. torchrun launches N=NPROC ranks. With the bridge, rank N-1 hosts the 7B/8B
     # scorer (hpsv3/deqa) and NEVER touches the policy/optimizer/dataloader/checkpointing; the other
     # N-1 ranks do Z-Image DDP training over a policy-only subgroup. Flag off => this block is skipped
-    # entirely and the run is byte-identical to the co-located light-reward path. Reward-gated (like
-    # flowgrpo/opsd/refl) so a stale ZIMAGE_HEAVY_BRIDGE=1 on an internvl run does NOT also fire this
-    # heavy bridge -> the internvl bridge below is the only one; no double make_bridge_groups. ---
+    # entirely and the run is byte-identical to the co-located light-reward path. ---
     _heavy_bridge_active = zimage_bridge_enabled() and list(config.reward_fn.keys())[0] in ("hpsv3", "deqa")
     if _heavy_bridge_active:
         from diffusionopsd.zimage_reward_bridge import (
@@ -322,32 +317,6 @@ def main(_):
         world_size = world_size - 1             # policy world size drives sampler counts + batch math
         logger.info(f"[bridge] policy rank={rank} policy_world_size={world_size} "
                     f"(heavy reward server=rank {_server_rank})")
-
-    # --- INTERNVL_BRIDGE (gated): the 26B InternVL rewards (internvl_t2i / internvl_dual) run on a
-    # dedicated 2-GPU-sharded reward server for nft too (the 26B co-located on the 6B Z-Image DiT OOMs,
-    # unlike on the smaller SD3.5-M where nft co-locates it). nft uses the reward FORWARD-ONLY, so the
-    # reward_fn (rewards.internvl_*_score) ships the image to the server via remote_reward_scores_forward
-    # under INTERNVL_BRIDGE=1 -- no reward-gradient, no trainer ref-plumbing (internvl_dual's ref is
-    # loaded in rewards.py from prompt_metadata['ref_path']). Mutually exclusive with ZIMAGE_HEAVY_BRIDGE. ---
-    _internvl_bridge_active = internvl_bridge_enabled() and list(config.reward_fn.keys())[0] in ("internvl_t2i", "internvl_dual")
-    if _internvl_bridge_active:
-        from diffusionopsd.internvl_bridge import (
-            make_bridge_groups as _iv_make_groups, is_server_rank as _iv_is_server,
-            RewardServer as _IVRewardServer, bridge_server_devices as _iv_server_devices,
-            policy_group as _iv_policy_group,
-        )
-        _iv_make_groups(world_size)  # ALL ranks call this (new_group is a world collective)
-        if _iv_is_server(rank):
-            _iv_devs = _iv_server_devices(local_rank)   # [6,7] on a real 8-GPU node (2-GPU shard of the 26B)
-            server = _IVRewardServer(_iv_devs[0], _iv_devs, reward_kind=list(config.reward_fn.keys())[0])
-            server.serve(n_policy=world_size - 1)        # blocks until every policy rank sends CMD_SHUTDOWN
-            cleanup_distributed()
-            return
-        POLICY_GROUP = _iv_policy_group()               # DDP + all policy collectives use this subgroup
-        _iv_server_rank = world_size - 1
-        world_size = world_size - 1                     # policy world size drives sampler counts + batch math
-        logger.info(f"[internvl-bridge] policy rank={rank} policy_world_size={world_size} "
-                    f"(internvl-26B reward server=rank {_iv_server_rank})")
 
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
     config.run_name = (config.run_name + "_" + unique_id) if config.run_name else unique_id
@@ -806,10 +775,6 @@ def main(_):
         # rendezvous on the gloo barrier before tearing down the process groups.
         from diffusionopsd.zimage_reward_bridge import bridge_client_shutdown
         bridge_client_shutdown()
-    if _internvl_bridge_active:
-        # Same handshake for the 26B internvl reward server (only policy ranks reach here).
-        from diffusionopsd.internvl_bridge import bridge_client_shutdown as _iv_client_shutdown
-        _iv_client_shutdown()
     cleanup_distributed()
 
 

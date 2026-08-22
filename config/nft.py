@@ -17,11 +17,6 @@ PUBLIC_REWARDS = {
     "hpsv3",
     "deqa",
 }
-# These evaluators use internal fine-tuned weights. Their implementations are
-# retained for provenance, but the public release does not provide checkpoints.
-INTERNAL_REWARDS = {"altclip", "internvl_t2i", "internvl_dual"}
-
-
 def _load_local(name: str):
     path = Path(__file__).with_name(name)
     spec = importlib.util.spec_from_file_location(f"_diffusionopsd_{path.stem}", path)
@@ -53,14 +48,14 @@ def _get_config(
 
     if base_model != "sd3":
         raise ValueError(f"Only the paper's SD3.5-M backbone is supported, got {base_model!r}")
-    if dataset not in {"pickscore", "internvl_dual"}:
+    if dataset != "pickscore":
         raise ValueError(f"Unsupported public dataset: {dataset!r}")
     if n_gpus < 1 or gradient_step_per_epoch < 1:
         raise ValueError("n_gpus and gradient_step_per_epoch must be positive")
 
     config = base.get_config()
     config.base_model = base_model
-    config.dataset = str(ROOT / "data" / ("pickapic" if dataset == "pickscore" else dataset))
+    config.dataset = str(ROOT / "data" / "pickapic")
     config.pretrained.model = "stabilityai/stable-diffusion-3.5-medium"
     config.pretrained.revision = ""
     config.resolution = 512
@@ -135,12 +130,11 @@ def get_config(name: str):
     if not name.startswith(prefix):
         raise ValueError(f"Expected sd3_<reward>, got {name!r}")
     reward = name[len(prefix):]
-    if reward not in PUBLIC_REWARDS | INTERNAL_REWARDS:
+    if reward not in PUBLIC_REWARDS:
         raise ValueError(f"Unsupported SD3.5-M reward: {reward!r}")
-    dataset = "internvl_dual" if reward == "internvl_dual" else "pickscore"
     return _get_config(
         n_gpus=n_gpus,
-        dataset=dataset,
+        dataset="pickscore",
         reward_fn={reward: 1.0},
         name=reward,
     )

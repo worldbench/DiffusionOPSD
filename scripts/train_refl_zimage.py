@@ -20,8 +20,6 @@ from diffusionopsd.metrics import install_wandb_jsonl_tee
 from scripts import train_opsd_zimage as runtime
 from scripts.refl_common import (
     EVAL_SCORE_BATCH_ONE_REWARDS,
-    INTERNVL_REWARDS,
-    PAIRWISE_REWARDS,
     REFL_IMPLEMENTATION_REVISION,
     REWARDS,
     ZIMAGE_DIFF_BRIDGE_REWARDS,
@@ -37,13 +35,11 @@ from scripts.refl_common import (
     gather_indexed_scores,
     load_prompt_records,
     load_refl_checkpoint,
-    load_ref_images,
     maybe_no_sync,
     provenance_from_env,
     prepare_resume_artifacts,
     read_json,
     require_finite_nonzero,
-    require_pairwise_references,
     restore_refl_rng_state,
     shard_update_records,
     save_refl_checkpoint,
@@ -109,12 +105,6 @@ def _encode_update_cache(pipeline, local_micro_batches, device):
     return cache
 
 
-def _refs(records, root: str, reward: str, device: torch.device):
-    if reward not in PAIRWISE_REWARDS:
-        return None
-    return load_ref_images([record["ref_path"] for record in records], root, device)
-
-
 def _late_x0(model, latents, sigmas, prompt_embeds, late_indices):
     z_t = torch.cat([latents[index][batch : batch + 1] for batch, index in enumerate(late_indices)]).detach().float()
     sigma = torch.stack([sigmas[index].detach().float() for index in late_indices]).to(z_t.device)
@@ -123,15 +113,9 @@ def _late_x0(model, latents, sigmas, prompt_embeds, late_indices):
     return z_t - sigma_e * velocity.float(), sigma
 
 
-def _score_images_eval(scorer, reward: str, images: torch.Tensor, prompts, refs):
+def _score_images_eval(scorer, reward: str, images: torch.Tensor, prompts):
     """Paper evaluator's frozen forward scorer path (not the training gradient path)."""
     with torch.no_grad():
-        if reward == "internvl_t2i":
-            from diffusionopsd.internvl_bridge import remote_reward_scores_forward
-            return remote_reward_scores_forward(images, prompts).float()
-        if reward == "internvl_dual":
-            from diffusionopsd.internvl_bridge import remote_reward_scores_pair_forward
-            return remote_reward_scores_pair_forward(images, refs, prompts).float()
         if reward in ZIMAGE_DIFF_BRIDGE_REWARDS and runtime.zimage_heavy_diff_bridge_enabled():
             from diffusionopsd.zimage_heavy_diff_bridge import remote_heavy_reward_forward
             return remote_heavy_reward_forward(images, prompts).float()
@@ -145,29 +129,23 @@ def _score_images_eval(scorer, reward: str, images: torch.Tensor, prompts, refs)
             return scorer(pixels).float()
         if reward == "imagereward":
             return scorer(prompts, images).float()
-        if reward in {"clipscore", "hpsv2", "altclip"}:
+        if reward in {"clipscore", "hpsv2"}:
             return scorer(images, prompts).float()
         raise ValueError(f"unsupported canonical eval reward: {reward}")
 
 
-def _forward_reward(pipeline, scorer, reward: str, x0: torch.Tensor, prompts, refs):
+def _forward_reward(pipeline, scorer, reward: str, x0: torch.Tensor, prompts):
     with torch.no_grad():
         images = runtime.zimage_decode(pipeline.vae, x0)
-        if reward == "internvl_t2i":
-            from diffusionopsd.internvl_bridge import remote_reward_scores_forward
-            return remote_reward_scores_forward(images, prompts).float()
-        if reward == "internvl_dual":
-            from diffusionopsd.internvl_bridge import remote_reward_scores_pair_forward
-            return remote_reward_scores_pair_forward(images, refs, prompts).float()
         if reward in ZIMAGE_DIFF_BRIDGE_REWARDS and runtime.zimage_heavy_diff_bridge_enabled():
             from diffusionopsd.zimage_heavy_diff_bridge import remote_heavy_reward_forward
             return remote_heavy_reward_forward(images, prompts).float()
-        return runtime._reward_scores_grad(scorer, reward, images, prompts, ref=refs).float()
+        return runtime._reward_scores_grad(scorer, reward, images, prompts).float()
 
 
 def _evaluate(
     *, pipeline, model, scorer, reward, encoded_batches, manifest_records, config, device, group, rank,
-    ref_root: str, output_path: str, update: int | str, score_scale: float,
+    output_path: str, update: int | str, score_scale: float,
 ):
     local_indices, local_scores = [], []
     model.eval()
@@ -188,10 +166,9 @@ def _evaluate(
         score_batch = 1 if reward in EVAL_SCORE_BATCH_ONE_REWARDS else len(records)
         for start in range(0, len(records), score_batch):
             chunk = records[start : start + score_batch]
-            refs = _refs(chunk, ref_root, reward, device)
             score = _score_images_eval(
                 scorer, reward, images[start : start + len(chunk)],
-                [record["prompt"] for record in chunk], refs,
+                [record["prompt"] for record in chunk],
             )
             local_indices.extend(int(record["index"]) for record in chunk)
             local_scores.append(score.detach().float() * float(score_scale))
@@ -210,7 +187,7 @@ def _evaluate(
         for index, score in merged:
             source = by_index[index]
             per_image.append({
-                "index": index, "prompt": source["prompt"], "ref_path": source.get("ref_path", ""),
+                "index": index, "prompt": source["prompt"],
                 "seed": int(source["noise_seed"]), "score": score,
                 "noise_offset": int(source["noise_offset"]),
                 "noise_batch_size": int(source["noise_batch_size"]),
@@ -263,8 +240,7 @@ def _calibrate(*, pipeline, model, scorer, reward, encoded_records, config, rr, 
             raise AssertionError("calibration must stop exactly before the sampled denoiser call")
         with torch.no_grad():
             x0, _sigma = _late_x0(model, out["latents"], out["sigmas"], embeddings, [late_index])
-        refs = _refs([record], str(rr.pairwise_train_ref_root), reward, device)
-        score = _forward_reward(pipeline, scorer, reward, x0, [record["prompt"]], refs)
+        score = _forward_reward(pipeline, scorer, reward, x0, [record["prompt"]])
         local_indices.append(int(record["index"]))
         local_scores.append(score.detach().float())
     merged = gather_indexed_scores(
@@ -315,9 +291,6 @@ def main(_):
     shutdown_bridge = None
     policy_world = launch_world
     diff_bridge = reward in ZIMAGE_DIFF_BRIDGE_REWARDS
-    internvl_bridge = reward in INTERNVL_REWARDS
-    if diff_bridge and internvl_bridge:
-        raise RuntimeError("reward cannot require both bridge types")
     if diff_bridge:
         if not runtime.zimage_heavy_diff_bridge_enabled():
             raise RuntimeError(f"{reward} requires ZIMAGE_HEAVY_DIFF_BRIDGE=1")
@@ -330,22 +303,6 @@ def main(_):
             HeavyDiffRewardServer(bridge_server_devices(local_rank)[0], reward_kind=reward).serve(
                 n_policy=launch_world - 1
             )
-            runtime.cleanup_distributed()
-            return
-        group = policy_group()
-        policy_world = launch_world - 1
-        shutdown_bridge = bridge_client_shutdown
-    elif internvl_bridge:
-        if not runtime.bridge_enabled():
-            raise RuntimeError(f"{reward} requires INTERNVL_BRIDGE=1")
-        from diffusionopsd.internvl_bridge import (
-            RewardServer, bridge_client_shutdown, bridge_server_devices, is_server_rank,
-            make_bridge_groups, policy_group,
-        )
-        make_bridge_groups(launch_world)
-        if is_server_rank(rank):
-            devices = bridge_server_devices(local_rank)
-            RewardServer(devices[0], devices, reward_kind=reward).serve(n_policy=launch_world - 1)
             runtime.cleanup_distributed()
             return
         group = policy_group()
@@ -446,9 +403,6 @@ def main(_):
         generation_batch_size=int(rr.eval_generation_batch_size),
     )
     curve_records = final_records[: int(rr.curve_eval_num_prompts)]
-    if reward in PAIRWISE_REWARDS:
-        require_pairwise_references(calibration_records, str(rr.pairwise_train_ref_root), label="calibration")
-        require_pairwise_references(final_records, str(rr.pairwise_eval_ref_root), label="evaluation")
     write_json(
         os.path.join(config.save_dir, "manifests", "calibration.json"),
         {"source": str(rr.calibration_manifest_path), "records": calibration_records,
@@ -472,7 +426,7 @@ def main(_):
     encoded_final = _preencode_eval_batches(pipeline, final_records, rank, policy_world, device)
     encoded_curve = _preencode_eval_batches(pipeline, curve_records, rank, policy_world, device)
 
-    scorer = None if (diff_bridge or internvl_bridge) else runtime._load_reward_scorer(reward, device)
+    scorer = None if diff_bridge else runtime._load_reward_scorer(reward, device)
     initialization_seconds = time.perf_counter() - process_started
     calibration_started = time.perf_counter()
     if resume_checkpoint:
@@ -506,7 +460,7 @@ def main(_):
             eval0 = _evaluate(
                 pipeline=pipeline, model=model.module, scorer=scorer, reward=reward,
                 encoded_batches=encoded_curve, manifest_records=curve_records, config=config, device=device,
-                group=group, rank=rank, ref_root=str(rr.pairwise_eval_ref_root),
+                group=group, rank=rank,
                 output_path=os.path.join(config.save_dir, "curve", "update_0000.json"), update=0,
                 score_scale=score_scale,
             )
@@ -615,7 +569,6 @@ def main(_):
                 pipeline=pipeline, model=model.module, scorer=scorer, reward=reward,
                 encoded_batches=encoded_curve, manifest_records=curve_records,
                 config=config, device=device, group=group, rank=rank,
-                ref_root=str(rr.pairwise_eval_ref_root),
                 output_path=os.path.join(
                     config.save_dir, "curve", f"update_{global_step:04d}.json"
                 ),
@@ -658,7 +611,6 @@ def main(_):
             for record in update_records:
                 groups.setdefault(int(record["group_slot"]), {
                     "dataset_index": int(record["dataset_index"]), "prompt": record["prompt"],
-                    "ref_path": record["ref_path"],
                 })
             append_jsonl(
                 os.path.join(config.save_dir, "manifests", "train_updates.jsonl"),
@@ -706,9 +658,8 @@ def main(_):
             model.train()
             with maybe_no_sync(model, micro_index == len(local_batches) - 1):
                 x0, sigma = _late_x0(model, out["latents"], out["sigmas"], embeddings, late_indices)
-                refs = _refs(records, str(rr.pairwise_train_ref_root), reward, device)
                 raw_reward = runtime._reward_of_latents_grad(
-                    pipeline, scorer, reward, x0, prompts, ref=refs
+                    pipeline, scorer, reward, x0, prompts
                 ).float()
                 normalized = (
                     (raw_reward - calibration_mean) / calibration_std
@@ -818,7 +769,6 @@ def main(_):
                     pipeline=pipeline, model=model.module, scorer=scorer, reward=reward,
                     encoded_batches=encoded_curve, manifest_records=curve_records,
                     config=config, device=device, group=group, rank=rank,
-                    ref_root=str(rr.pairwise_eval_ref_root),
                     output_path=os.path.join(config.save_dir, "curve", f"update_{global_step:04d}.json"),
                     update=global_step, score_scale=score_scale,
                 )
@@ -859,7 +809,6 @@ def main(_):
             pipeline=pipeline, model=model.module, scorer=scorer, reward=reward,
             encoded_batches=encoded_final, manifest_records=final_records,
             config=config, device=device, group=group, rank=rank,
-            ref_root=str(rr.pairwise_eval_ref_root),
             output_path=os.path.join(config.save_dir, "final_eval", "result.json"),
             update="final", score_scale=score_scale,
         )

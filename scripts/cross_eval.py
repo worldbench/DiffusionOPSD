@@ -44,8 +44,7 @@ from diffusionopsd.diffusers_patch.pipeline_with_logprob import pipeline_with_lo
 from diffusionopsd.diffusers_patch.train_dreambooth_lora_sd3 import encode_prompt
 
 # Self-contained public scorers used by the default pass. ImageReward and the heavyweight
-# public scorers can be requested explicitly. The paper's AltCLIP evaluator is internal and
-# requires ALTCLIP_MODEL_PATH, so it must never be selected implicitly.
+# public scorers can be requested explicitly.
 DEFAULT_Y_REWARDS: Tuple[str, ...] = ("hpsv2", "clipscore", "aesthetic", "pickscore")
 
 # Sentinel used by reward functions for failed items.  Table evaluation rejects it
@@ -149,26 +148,11 @@ def build_pipeline(
     return pipeline, text_encoders, tokenizers
 
 
-def load_prompt_records(path: str, n_prompts: int) -> Tuple[List[str], List[Dict[str, Any]]]:
-    with open(path, "r") as f:
-        rows = [line.strip() for line in f.readlines() if line.strip()]
-    if n_prompts and n_prompts > 0:
-        rows = rows[:n_prompts]  # deterministic subset (first N) so every ckpt uses the same set
-    prompts: List[str] = []
-    metadata: List[Dict[str, Any]] = []
-    for line in rows:
-        if "\t" in line:
-            prompt, ref_path = line.split("\t", 1)
-            prompts.append(prompt)
-            metadata.append({"ref_path": ref_path})
-        else:
-            prompts.append(line)
-            metadata.append({})
-    return prompts, metadata
-
-
 def load_prompts(path: str, n_prompts: int) -> List[str]:
-    prompts, _ = load_prompt_records(path, n_prompts)
+    with open(path, "r") as f:
+        prompts = [line.strip() for line in f.readlines() if line.strip()]
+    if n_prompts and n_prompts > 0:
+        prompts = prompts[:n_prompts]  # deterministic subset (first N) so every ckpt uses the same set
     return prompts
 
 
@@ -239,7 +223,6 @@ def score_all(
     batch_size: int,
     pickscore_scale: str = "training",
     per_image_out: Optional[Dict[str, List[Optional[float]]]] = None,
-    metadata: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
     """Score the SAME image set with each Y reward, loading one scorer at a time and freeing it.
 
@@ -259,9 +242,6 @@ def score_all(
         raise ValueError(f"image/prompt count mismatch: {n_imgs} images, {len(prompts)} prompts")
     if batch_size <= 0:
         raise ValueError(f"score batch_size must be positive, got {batch_size}")
-    metadata = metadata if metadata is not None else [{} for _ in prompts]
-    if len(metadata) != n_imgs:
-        raise ValueError(f"image/metadata count mismatch: {n_imgs} images, {len(metadata)} rows")
     results: Dict[str, float] = {}
     stats: Dict[str, Dict[str, float]] = {}
     for name in reward_names:
@@ -276,9 +256,10 @@ def score_all(
             for start in range(0, images_cpu.shape[0], batch_size):
                 b_imgs = images_cpu[start:start + batch_size].to(device)
                 b_prompts = prompts[start:start + batch_size]
-                b_meta = metadata[start:start + batch_size]
                 with torch.no_grad():
-                    details, _ = scoring_fn(b_imgs, b_prompts, b_meta, only_strict=True)
+                    details, _ = scoring_fn(
+                        b_imgs, b_prompts, [{} for _ in b_prompts], only_strict=True
+                    )
                 vals = details[name]
                 if isinstance(vals, torch.Tensor):
                     vals = vals.detach().float().cpu().numpy()
@@ -380,7 +361,7 @@ def main() -> None:
             "(.../checkpoints/checkpoint-<step>/lora)."
         )
 
-    prompts, metadata = load_prompt_records(prompts_path, args.n_prompts)
+    prompts = load_prompts(prompts_path, args.n_prompts)
     print(
         f"[cross_eval] config={args.config} train_reward={train_reward} ckpt={args.ckpt}\n"
         f"[cross_eval] model={model_path} prompts={prompts_path} n={len(prompts)} "
@@ -405,7 +386,7 @@ def main() -> None:
     score_batch_size = args.score_batch_size if args.score_batch_size > 0 else args.batch_size
     scores, score_stats = score_all(
         images_cpu, prompts, reward_names, device, score_batch_size, args.pickscore_scale,
-        per_image_out=per_image_out, metadata=metadata,
+        per_image_out=per_image_out,
     )
 
     guidance_scale = args.guidance_scale if args.guidance_scale >= 0 else float(config.sample.guidance_scale)

@@ -39,10 +39,8 @@ REWARDS = (
     "hpsv3",
     "deqa",
 )
-PAIRWISE_REWARDS: set[str] = set()
-INTERNVL_REWARDS: set[str] = set()
 ZIMAGE_DIFF_BRIDGE_REWARDS = {"hpsv3", "deqa"}
-EVAL_SCORE_BATCH_ONE_REWARDS = {"hpsv3", "deqa", "internvl_t2i", "internvl_dual"}
+EVAL_SCORE_BATCH_ONE_REWARDS = {"hpsv3", "deqa"}
 REFL_IMPLEMENTATION_REVISION = "truncated_prefix_pre_eval_ckpt_migrated_v3"
 _TRANSIENT_IO_ERRNOS = {
     errno.EAGAIN,
@@ -70,13 +68,9 @@ def sha256_file(path: str | os.PathLike[str]) -> str:
 
 def parse_prompt_line(line: str) -> dict[str, str]:
     line = line.rstrip("\n")
-    if "\t" in line:
-        prompt, ref_path = line.split("\t", 1)
-    else:
-        prompt, ref_path = line, ""
-    if not prompt:
+    if not line:
         raise ValueError("empty prompt in manifest")
-    return {"prompt": prompt, "ref_path": ref_path}
+    return {"prompt": line}
 
 
 def load_prompt_records(path: str | os.PathLike[str], limit: int = 0) -> list[dict[str, str]]:
@@ -134,7 +128,6 @@ def build_update_records(
                 "repeat_index": repeat_index,
                 "dataset_index": dataset_index,
                 "prompt": source["prompt"],
-                "ref_path": source.get("ref_path", ""),
                 "noise_seed": int(noise_seed + update_index * total + canonical_index),
                 "late_seed": int(late_seed + update_index * total + canonical_index),
                 "canonical_trajectory_index": canonical_index,
@@ -206,7 +199,6 @@ def fixed_manifest_records(
         item: dict[str, Any] = {
             "index": index,
             "prompt": source["prompt"],
-            "ref_path": source.get("ref_path", ""),
             "noise_seed": int(noise_seed + index),
         }
         if late_seed is not None:
@@ -242,7 +234,6 @@ def fixed_eval_manifest_records(
         result.append({
             "index": index,
             "prompt": source["prompt"],
-            "ref_path": source.get("ref_path", ""),
             "noise_seed": int(base_seed + batch_index),
             "noise_offset": int(offset),
             "noise_batch_size": int(actual_batch_size),
@@ -739,37 +730,6 @@ def maybe_no_sync(model, should_sync: bool):
 def require_finite_nonzero(name: str, value: float, *, minimum: float = 0.0) -> None:
     if not math.isfinite(float(value)) or float(value) <= minimum:
         raise RuntimeError(f"{name} must be finite and > {minimum}, got {value}")
-
-
-def require_pairwise_references(records: Sequence[dict[str, Any]], root: str, *, label: str) -> None:
-    if not root:
-        raise RuntimeError(f"{label}: pairwise reference root is empty")
-    missing = []
-    for record in records:
-        ref_path = record.get("ref_path", "")
-        full = os.path.join(root, ref_path) if ref_path else ""
-        if not full or not _is_file(full):
-            missing.append(full or f"<empty ref for {record.get('prompt', '')[:80]}>")
-            if len(missing) >= 8:
-                break
-    if missing:
-        raise RuntimeError(f"{label}: missing real pairwise references: {missing}")
-
-
-def load_ref_images(ref_paths: Sequence[str], root: str, device: torch.device) -> torch.Tensor:
-    """Load real pairwise references.  There is deliberately no gray fallback."""
-    from PIL import Image
-    import torchvision.transforms.functional as transform
-
-    images = []
-    for ref_path in ref_paths:
-        full = os.path.join(root, ref_path) if root and ref_path else ""
-        if not full or not _is_file(full):
-            raise RuntimeError(f"pairwise reference is missing: root={root!r}, ref_path={ref_path!r}")
-        images.append(transform.to_tensor(Image.open(full).convert("RGB")))
-    if len({tuple(image.shape) for image in images}) != 1:
-        raise RuntimeError("pairwise references in one micro-batch have inconsistent image shapes")
-    return torch.stack(images).to(device=device, dtype=torch.float32)
 
 
 def provenance_from_env() -> dict[str, str]:

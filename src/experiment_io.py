@@ -67,14 +67,24 @@ def save_trainer_state(
     global_step: int,
     ema: Any | None,
 ) -> None:
-    """Save exact continuation metadata, EMA, and RNG state."""
+    """Save continuation metadata, EMA, and a safe rank-0 RNG snapshot."""
     root = Path(checkpoint)
     root.mkdir(parents=True, exist_ok=True)
+    numpy_state = np.random.get_state()
     state = {
         "epoch_completed": int(epoch_completed),
         "global_step": int(global_step),
         "python_random_state": random.getstate(),
-        "numpy_random_state": np.random.get_state(),
+        # Store NumPy's uint32 array as a tensor so PyTorch's safe
+        # ``weights_only=True`` loader can restore it without unpickling
+        # arbitrary Python objects.
+        "numpy_random_state": {
+            "bit_generator": numpy_state[0],
+            "keys": torch.from_numpy(numpy_state[1].copy()),
+            "pos": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
     }
@@ -90,7 +100,7 @@ def restore_ema_and_rng(checkpoint: str, ema: Any | None, *, restore_rng: bool =
     root = Path(checkpoint)
     ema_path = root / "ema.pt"
     if ema is not None and ema_path.is_file():
-        ema.load_state_dict(torch.load(ema_path, map_location="cpu"))
+        ema.load_state_dict(torch.load(ema_path, map_location="cpu", weights_only=True))
     # A checkpoint is written by rank 0. Replaying that one RNG state on every
     # distributed rank would duplicate rollout noise, so restoration is opt-in.
     rng_path = root / "rng_state.pt"
@@ -98,9 +108,16 @@ def restore_ema_and_rng(checkpoint: str, ema: Any | None, *, restore_rng: bool =
         return
     if not rng_path.is_file():
         return
-    state = torch.load(rng_path, map_location="cpu")
+    state = torch.load(rng_path, map_location="cpu", weights_only=True)
     random.setstate(state["python_random_state"])
-    np.random.set_state(state["numpy_random_state"])
+    numpy_state = state["numpy_random_state"]
+    np.random.set_state((
+        numpy_state["bit_generator"],
+        numpy_state["keys"].cpu().numpy().astype(np.uint32, copy=False),
+        int(numpy_state["pos"]),
+        int(numpy_state["has_gauss"]),
+        float(numpy_state["cached_gaussian"]),
+    ))
     torch.set_rng_state(state["torch_rng_state"])
     if torch.cuda.is_available() and state.get("cuda_rng_state_all"):
         torch.cuda.set_rng_state_all(state["cuda_rng_state_all"])

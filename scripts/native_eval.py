@@ -16,9 +16,9 @@ Its generation reuses `zimage_rollout` (the exact path in train_nft_zimage.py:ev
 than a stock `__call__`, so the base row is bit-for-bit comparable to the trained Z-Image rows.
 Z-Image evaluation requires a Diffusers build that provides ``ZImagePipeline``.
 
-Not runnable on CPU. Offline (models pre-downloaded to $MODEL_ROOT). One reward scorer
-is loaded at a time (peak memory = max(pipeline, largest scorer)); the pipeline is freed
-before scoring.
+Not runnable on CPU. Download the selected base model first or allow Hugging Face Hub to
+resolve it. One reward scorer is loaded at a time (peak memory = max(pipeline, largest
+scorer)); the pipeline is freed before scoring.
 """
 
 from __future__ import annotations
@@ -32,7 +32,10 @@ from typing import Any, List, Optional, Tuple
 import torch
 
 # Reuse the exact scoring / IO path from the SD3 harness so numbers are comparable.
-import cross_eval
+try:
+    import cross_eval
+except ModuleNotFoundError:  # Support ``import scripts.native_eval`` as well as direct execution.
+    from scripts import cross_eval
 
 # Per-model official-default inference config. Resolution follows the DiffusionNFT
 # Table-1 annotation (SD-XL / SD3.5-L at 1024; FLUX at 512). steps/guidance are the
@@ -68,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prompt_set_name", default="drawbench", help="Prompt-set tag recorded in JSON.")
     p.add_argument("--protocol_name", default="", help="Protocol tag recorded in JSON.")
     p.add_argument("--rewards", default="pickscore,clipscore,hpsv2,aesthetic,imagereward",
-                   help="Comma-separated pointwise reward scorers (no internvl_dual for single-checkpoint rows).")
+                   help="Comma-separated public reward scorers.")
     p.add_argument("--n_prompts", type=int, default=0, help="Number of prompts from --start_idx (0 => to end).")
     p.add_argument("--start_idx", type=int, default=0, help="Prompt offset — for data-parallel sharding across GPUs.")
     p.add_argument("--seed", type=int, default=42, help="Fixed per-batch latent seed.")
@@ -80,8 +83,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dtype", default="auto", choices=["auto", "fp16", "bf16"],
                    help="Pipeline weight dtype. auto => per-pipeline default (FLUX=bf16, else fp16).")
     p.add_argument("--score_batch_size", type=int, default=16,
-                   help="Scorer minibatch size (16 = historical default, keeps existing rows reproducible). "
-                        "Lower it for the 26B InternVL scorers, which OOM at 16 on an 80 GB card.")
+                   help="Scorer minibatch size (16 keeps existing rows reproducible).")
     p.add_argument("--per_image_json", default="",
                    help="Optional path for the per-image score dump {reward: [score|null per prompt]}, "
                         "index-aligned to the prompt shard. Written ALONGSIDE --out, which keeps its exact "
@@ -233,18 +235,9 @@ def main() -> None:
     dtype = torch.float16 if dtype_name == "fp16" else torch.bfloat16
     reward_names = [r.strip() for r in args.rewards.split(",") if r.strip()]
 
-    # internvl_dual (pairwise) scores each generated image against a per-prompt reference carried as
-    # "prompt<TAB>ref_path"; load_prompt_records keeps that metadata (plain lines -> empty dict). Every
-    # other reward needs only the prompt strings, so keep the light load_prompts path unchanged there.
-    _needs_meta = "internvl_dual" in reward_names
-    if _needs_meta:
-        all_prompts, all_meta = cross_eval.load_prompt_records(args.prompts, 0)
-    else:
-        all_prompts = cross_eval.load_prompts(args.prompts, 0)
-        all_meta = None
+    all_prompts = cross_eval.load_prompts(args.prompts, 0)
     end = args.start_idx + args.n_prompts if args.n_prompts > 0 else len(all_prompts)
     prompts = all_prompts[args.start_idx:end]  # shard slice (start_idx..end) for data-parallel eval
-    metadata = all_meta[args.start_idx:end] if all_meta is not None else None  # ref_path per prompt (internvl_dual)
     print(
         f"[native_eval] pipeline={args.pipeline} model={args.model} lora={args.lora or '-'} "
         f"shard[{args.start_idx}:{end}]\n"
@@ -274,7 +267,6 @@ def main() -> None:
     scores, score_stats = cross_eval.score_all(
         images_cpu, prompts, reward_names, device, batch_size=args.score_batch_size,
         pickscore_scale=args.pickscore_scale,
-        metadata=metadata,  # None => score_all defaults to empty dicts (byte-identical to before)
         per_image_out=per_image,  # None => score_all skips the per-image column (unchanged path)
     )
 

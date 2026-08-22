@@ -1,6 +1,6 @@
 """Differentiable HPSv3 reward scorer (MizzenAI/HPSv3 = Qwen2-VL-7B + ranknet head).
 
-HPSv3 is the VLM successor of HPSv2.1: pointwise, rewards prompt-alignment AND quality, scalar = mu
+HPSv3 is the VLM successor of HPSv2.1: it rewards prompt alignment and quality, with scalar = mu
 (the first of the [mu, sigma] ranknet logits). The `hpsv3` package ships its OWN differentiable image
 processor (`_preprocess_differentiable`: smart_resize + F.interpolate + patchify, all torch ops), so the
 reward is differentiable w.r.t. the input image and can drive OPA's reward-gradient ascent.
@@ -22,6 +22,7 @@ import torch
 from PIL import Image
 
 DEFAULT_CHECKPOINT = os.environ.get("HPSV3_CHECKPOINT") or None
+DEFAULT_CONFIG = os.environ.get("HPSV3_CONFIG") or None
 DEFAULT_REVISION = os.environ.get(
     "HPSV3_REVISION", "4f81e3e09edd82fe3c5f636444c721b592a735ca"
 )
@@ -30,7 +31,7 @@ _FIXED_HW = 448  # 256*28*28 pixels, square -> smart_resize gives 448x448
 
 class HPSv3Scorer(torch.nn.Module):
     def __init__(self, checkpoint_path: str | None = DEFAULT_CHECKPOINT, device: str = "cuda",
-                 dtype: torch.dtype = torch.bfloat16):
+                 dtype: torch.dtype = torch.bfloat16, config_path: str | None = DEFAULT_CONFIG):
         super().__init__()
         from hpsv3 import HPSv3RewardInferencer
         self.device = device
@@ -43,7 +44,7 @@ class HPSv3Scorer(torch.nn.Module):
                 "HPSv3.safetensors",
                 revision=DEFAULT_REVISION,
             )
-        self.inf = HPSv3RewardInferencer(config_path=None, checkpoint_path=checkpoint_path,
+        self.inf = HPSv3RewardInferencer(config_path=config_path, checkpoint_path=checkpoint_path,
                                          device=device, differentiable=True)
         self.inf.model.requires_grad_(False)
         # --- MEMORY: gradient-checkpoint the 7B backbone. The OPA reward-ascent needs grad w.r.t. the
@@ -123,7 +124,11 @@ _HPSV3_CACHE: dict = {}
 
 
 def get_hpsv3_scorer(device: str = "cuda", **kwargs) -> "HPSv3Scorer":
-    key = (str(device), kwargs.get("checkpoint_path", DEFAULT_CHECKPOINT))
+    key = (
+        str(device),
+        kwargs.get("checkpoint_path", DEFAULT_CHECKPOINT),
+        kwargs.get("config_path", DEFAULT_CONFIG),
+    )
     s = _HPSV3_CACHE.get(key)
     if s is None:
         s = HPSv3Scorer(device=device, **kwargs)

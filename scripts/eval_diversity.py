@@ -5,7 +5,7 @@ Settles the decisive question the confounded rollout snapshots cannot: at matche
 prompts, does a checkpoint keep DIVERSITY (varied images for the same prompt = no mode
 collapse) or has reward optimization concentrated it? Reports, per checkpoint:
   - hps_mean            : HPSv2.1 over all generated images (matched prompt set)
-  - intra_prompt_div    : 1 - mean pairwise cosine of open_clip image features WITHIN a prompt,
+  - intra_prompt_div    : 1 - mean cosine similarity of open_clip image features WITHIN a prompt,
                           averaged over prompts. Low => same image regardless of init noise
                           => mode collapse. This is the mode-collapse detector.
   - inter_prompt_div    : same across prompt-mean features (spread across prompts).

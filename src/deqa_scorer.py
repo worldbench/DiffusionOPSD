@@ -256,7 +256,6 @@ class DeQAScorer(torch.nn.Module):
 # on the ReFL/OPSD backprop path (nft only forward-scores, so it never hit this). All three want the SAME
 # frozen model, so hand out ONE shared instance per (device, model_path). Safe: params are frozen and
 # scoring is functional (no per-call state); the no-grad __call__ and the grad _scores share the weights.
-# Mirrors diffusionopsd.internvl_t2i_scorer.get_internvl_t2i_scorer.
 _SCORER_CACHE: dict = {}
 
 

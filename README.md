@@ -37,6 +37,9 @@
   <a href="https://github.com/worldbench/DiffusionOPSD">
     <img src="https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Code">
   </a>
+  <a href="https://huggingface.co/WeiChow/DiffusionOPSD">
+    <img src="https://img.shields.io/badge/Models-Hugging_Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Hugging Face Models">
+  </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-16A34A?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 License">
   </a>
@@ -277,7 +280,7 @@ pip install 'flash-attn==2.7.4.post1' --no-build-isolation
 
 Weight resolution:
 
-- HPSv3 downloads the pinned `MizzenAI/HPSv3` reward checkpoint and the Qwen2-VL-7B base model. Set `HPSV3_CHECKPOINT=/path/to/HPSv3.safetensors` for an offline copy, or `HPSV3_REVISION` to test a different upstream revision.
+- HPSv3 downloads the pinned `MizzenAI/HPSv3` reward checkpoint and the Qwen2-VL-7B base model. Set `HPSV3_CHECKPOINT=/path/to/HPSv3.safetensors` for an offline checkpoint, `HPSV3_CONFIG=/path/to/HPSv3_7B.yaml` for an offline base-model path, or `HPSV3_REVISION` to test a different upstream revision.
 - DeQA downloads a pinned revision of [`zhiyuanyou/DeQA-Score-Mix3`](https://huggingface.co/zhiyuanyou/DeQA-Score-Mix3). Set `DEQA_MODEL_PATH=/path/to/DeQA-Score-Mix3` for an offline copy, or `DEQA_MODEL_REVISION` to test another revision.
 
 #### Heavy-reward launch topology
@@ -337,12 +340,6 @@ Paper-matched baseline presets:
 | DiffusionNFT | Z-Image-Turbo | `config/zimage.py:zimg_nft_<reward>` | all seven | 100 optimizer updates |
 | FlowGRPO | Z-Image-Turbo | `config/zimage.py:zimg_flowgrpo_<reward>` | all seven | 50 rollout rounds = 100 optimizer updates |
 | ReFL | both | `config/refl.py:<backbone>_<reward>` | all seven | 100 optimizer updates |
-
-### Configuration check (no model weights, no GPU)
-
-```bash
-python scripts/check_release.py
-```
 
 ### Short end-to-end check
 
@@ -434,6 +431,58 @@ NPROC=8 UPDATES=100 bash scripts/train_public.sh sd35 clipscore \
 ```
 
 The default is already the paper split: a pinned text-only Hugging Face dataset plus the bundled reconstruction recipe creates the exact 25,415-prompt manifest and verifies SHA-256 `39d94f…aa7100c`.
+
+---
+
+## 🤗 Released Checkpoints
+
+Three LoRA checkpoints are available from [`WeiChow/DiffusionOPSD`](https://huggingface.co/WeiChow/DiffusionOPSD):
+
+| Checkpoint | Backbone | Training reward |
+|---|---|---|
+| `sd35-m-hpsv3` | SD3.5-M | HPSv3 |
+| `z-image-turbo-hpsv3` | Z-Image-Turbo | HPSv3 |
+| `z-image-turbo-pointwise` | Z-Image-Turbo | DiffusionOPSD checkpoint |
+
+Download them into the relative path used below:
+
+```bash
+hf download WeiChow/DiffusionOPSD --local-dir checkpoints/diffusionopsd
+```
+
+Generate the complete paper held-out set and run the matched HPSv3 benchmark for SD3.5-M. The generation batch size is part of the fixed seed schedule, so keep it at `16` when reproducing the reported protocol:
+
+```bash
+python scripts/cross_eval.py \
+  --ckpt checkpoints/diffusionopsd/sd35-m-hpsv3 \
+  --config_file config/public.py --config sd35_hpsv3 \
+  --prompts data/drawbench/test.txt \
+  --prompt_set_name drawbench --protocol_name table1_drawbench_flow40 \
+  --sampler flow --num_steps 40 --guidance_scale 1.0 \
+  --seed 42 --batch_size 16 --score_batch_size 1 \
+  --mixed_precision fp16 --rewards hpsv3 \
+  --images_dir outputs/sd35-m-hpsv3/images \
+  --out outputs/sd35-m-hpsv3/result.json
+```
+
+Use the complete native 9-step, 1024² Z-Image held-out protocol for either Z-Image adapter. Keep generation batches at `8` to preserve the reported per-batch seeds:
+
+```bash
+python scripts/native_eval.py \
+  --pipeline zimage --model Tongyi-MAI/Z-Image-Turbo \
+  --lora checkpoints/diffusionopsd/z-image-turbo-hpsv3 \
+  --prompts data/drawbench/test.txt \
+  --prompt_set_name drawbench --protocol_name native_zimage_drawbench \
+  --resolution 1024 --num_steps 9 --guidance_scale 0.0 \
+  --seed 42 --dtype bf16 --batch_size 8 --score_batch_size 8 \
+  --rewards hpsv3 \
+  --images_dir outputs/z-image-turbo-hpsv3/images \
+  --out outputs/z-image-turbo-hpsv3/result.json
+```
+
+For a short but seed-exact generation probe, append `--n_prompts 16` to the SD3.5-M command or `--n_prompts 8` to the Z-Image command; changing `--batch_size` changes the canonical seed grouping.
+
+Replace the LoRA path with `z-image-turbo-pointwise` to test its image-generation path. The corresponding paper evaluator is not included in this repository.
 
 ---
 
@@ -532,7 +581,6 @@ Canonical DiffusionOPSD defaults live in `config/opsd_defaults.py`:
 │   ├── train_refl.sh        # public ReFL launcher
 │   ├── prepare_pickapic_prompts.py
 │   ├── download_reward_weights.sh
-│   ├── check_release.py     # CPU-only config validation
 │   ├── train_opsd_ri_sd3.py
 │   ├── train_opsd_zimage.py
 │   ├── cross_eval.py

@@ -2,8 +2,7 @@
 
 Proves that routing a heavy scorer (hpsv3 7B / deqa 8B) through the dedicated reward SERVER is
 CORRECT — i.e. the server scores exactly the pixels the policy rank shipped, and the reward comes
-back intact. nft uses the reward forward-only (no gradient), so — unlike the internvl bridge — there
-is NO gradient to check.
+back intact. nft uses the reward forward-only, so there is no gradient to check.
 
 Why a bit-exact reward gate is the WRONG test here
 --------------------------------------------------

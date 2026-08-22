@@ -23,8 +23,6 @@ def _load(name: str):
 
 def sd3_reward_config(reward: str, *, dataset: str = "pickscore", n_gpus: int = 8):
     nft = _load("nft.py")
-    if reward == "internvl_dual":
-        dataset = "internvl_dual"
     return nft._get_config(
         base_model="sd3", n_gpus=n_gpus, gradient_step_per_epoch=1,
         dataset=dataset, reward_fn={reward: 1.0}, name=reward,

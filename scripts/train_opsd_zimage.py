@@ -30,7 +30,6 @@ import logging
 import numpy as np
 import diffusionopsd.rewards
 from diffusionopsd import profiling  # paper efficiency-profiling harness (env PROFILE=1)
-from diffusionopsd.internvl_bridge import bridge_enabled  # INTERNVL_BRIDGE 2-GPU reward server (gated; heavy rewards)
 from diffusionopsd.zimage_heavy_diff_bridge import zimage_heavy_diff_bridge_enabled  # ZIMAGE_HEAVY_DIFF_BRIDGE 1-GPU DIFFERENTIABLE heavy-reward server (gated; hpsv3/deqa)
 # NOTE: get_image_transform (diffusionopsd.clip_scorer) is imported LAZILY inside the pickscore/aesthetic
 # branches of _reward_scores_grad, NOT here, so an hpsv2 run's module-load import graph is unchanged
@@ -62,7 +61,9 @@ from torch.cuda.amp import GradScaler, autocast as torch_autocast
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
-config_flags.DEFINE_config_file("config", "config/zimage.py", "Training configuration.")
+config_flags.DEFINE_config_file(
+    "config", "config/zimage.py:zimg_opsd_hpsv2", "Training configuration."
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -78,8 +79,8 @@ QWEN_MAX_SEQ_LEN = 512
 # OPA differentiable-reward scope for Z-Image. These light rewards' frozen differentiable
 # scorer fits alongside the 6B Z-Image DiT on one GPU, so the OPA target ascent can follow the
 # TRAINING reward's gradient (not hardcoded HPS). HPSv3 and DeQA use the public differentiable
-# reward bridge; the internal 26B evaluators use their separate internal bridge.
-OPSD_ZIMAGE_DIFF_REWARDS = ("hpsv2", "clipscore", "pickscore", "aesthetic", "altclip", "imagereward")
+# reward bridge.
+OPSD_ZIMAGE_DIFF_REWARDS = ("hpsv2", "clipscore", "pickscore", "aesthetic", "imagereward")
 
 
 # ===================== OPA reward-improvement helpers (generic differentiable reward, Z-Image decode) ===================== #
@@ -91,22 +92,18 @@ OPSD_ZIMAGE_DIFF_REWARDS = ("hpsv2", "clipscore", "pickscore", "aesthetic", "alt
 _OPA_TFORM_CACHE = {}
 
 
-def _reward_scores_grad(scorer, kind, images01, prompts, ref=None):
-    """Differentiable reward score for images01 [B,3,H,W] in [0,1]. Dispatches per reward `kind`.
-    `ref` (per-prompt reference images) is required only for pairwise kinds (internvl_dual)."""
+def _reward_scores_grad(scorer, kind, images01, prompts):
+    """Differentiable reward score for images01 [B,3,H,W] in [0,1]."""
     if kind in ("open3", "multi_open3"):
         if not isinstance(scorer, dict):
             raise ValueError("Open3 composite OPA scorer must be a dict of sub-scorers.")
         total = None
         for sub_kind in ("pickscore", "clipscore", "hpsv2"):
-            sub_scores = _reward_scores_grad(scorer[sub_kind], sub_kind, images01, prompts, ref=ref)
+            sub_scores = _reward_scores_grad(scorer[sub_kind], sub_kind, images01, prompts)
             total = sub_scores if total is None else total + sub_scores
         return total.float()
     profiling.reward_fwd_inc()  # §6: reward forward (OPA ascent / certification scoring)
-    # INTERNVL_BRIDGE: for bridged internvl_t2i the local scorer is intentionally NOT loaded (the 26B
-    # lives on the server rank), so `scorer` is None here — the bridge branch below never uses `dev`.
-    # All non-bridge kinds have a real scorer. Keep this byte-identical when scorer is present.
-    dev = scorer.device if scorer is not None else None
+    dev = scorer.device if scorer is not None else images01.device
     if kind == "hpsv2":
         image = scorer.preprocess_val(images01.to(scorer.dtype).to(dev))
         text = scorer.processor(prompts).to(dev)
@@ -137,15 +134,6 @@ def _reward_scores_grad(scorer, kind, images01, prompts, ref=None):
         embed = scorer.clip.get_image_features(pixel_values=pixels)
         embed = embed / torch.linalg.vector_norm(embed, dim=-1, keepdim=True)
         return scorer.mlp.layers(embed).squeeze(1).float()  # .layers bypasses MLP.forward's @no_grad
-    if kind == "altclip":
-        return scorer._scores(images01, prompts).float()  # differentiable text-image cosine
-    if kind == "internvl_t2i":
-        if bridge_enabled():
-            # 2-GPU reward server holds the 26B; ship the decoded image, get reward+grad back. Routes
-            # Route OPA ascent and certification scoring through the bridge.
-            from diffusionopsd.internvl_bridge import remote_reward_scores
-            return remote_reward_scores(images01, prompts).float()
-        return scorer._scores(images01, prompts).float()  # differentiable InternVL2-26B score-token readout
     if kind == "hpsv3":
         if zimage_heavy_diff_bridge_enabled():
             # 7B hpsv3 lives on the diff-bridge server; ship the decoded image, get reward+grad back.
@@ -160,15 +148,6 @@ def _reward_scores_grad(scorer, kind, images01, prompts, ref=None):
         return scorer._scores(images01, prompts).float()  # differentiable mPLUG-Owl2 rating-token MOS
     if kind == "imagereward":
         return scorer._scores(images01, prompts).float()  # differentiable ImageReward BLIP score_gard
-    if kind == "internvl_dual":
-        # pairwise 26B judge: P(gen>ref) at the final token. _scores keeps grad on gen (ref is detached);
-        # call _scores directly because __call__ is @torch.no_grad (used by the reward_fn eval path).
-        if bridge_enabled():
-            # 2-GPU reward server holds the 26B; ship gen+ref, get reward+grad(gen) back. Routes OPA
-            # Route OPA ascent and certification scoring through the bridge.
-            from diffusionopsd.internvl_bridge import remote_reward_scores_pair
-            return remote_reward_scores_pair(images01, ref, prompts).float()
-        return scorer._scores(images01, ref, prompts).float()
     raise ValueError(f"OPA differentiable ascent: unsupported reward kind '{kind}'")
 
 
@@ -194,12 +173,6 @@ def _load_reward_scorer(kind, device):
     elif kind == "aesthetic":
         from diffusionopsd.aesthetic_scorer import AestheticScorer
         s = AestheticScorer(dtype=torch.float32, device=device)
-    elif kind == "altclip":
-        from diffusionopsd.altclip_scorer import AltCLIPScorer
-        s = AltCLIPScorer(device=device, dtype=torch.float32)
-    elif kind == "internvl_t2i":
-        from diffusionopsd.internvl_t2i_scorer import get_internvl_t2i_scorer
-        s = get_internvl_t2i_scorer(device=device)  # shared 26B singleton (reused across reward_fn/OPA)
     elif kind == "hpsv3":
         from diffusionopsd.hpsv3_scorer import get_hpsv3_scorer
         s = get_hpsv3_scorer(device=device)  # shared 7B singleton (avoid 3× load -> OOM)
@@ -209,44 +182,17 @@ def _load_reward_scorer(kind, device):
     elif kind == "imagereward":
         from diffusionopsd.imagereward_scorer import ImageRewardScorer
         s = ImageRewardScorer(device=device, dtype=torch.float32)  # differentiable BLIP score_gard
-    elif kind == "internvl_dual":
-        from diffusionopsd.internvl_dual_scorer import get_internvl_dual_scorer
-        s = get_internvl_dual_scorer(device=device)  # InternVL2-26B pairwise judge (shared process singleton)
     else:
         raise ValueError(f"OPA: no differentiable scorer for reward '{kind}'.")
     s.requires_grad_(False)
     return s
 
 
-def _load_ref_images(ref_paths, side, device):
-    """OPA internvl_dual: per-prompt reference images [b,3,H,W] in [0,1], aligned to prompts.
-    Ported verbatim from the SD3 OPA trainer; mirrors rewards.internvl_dual_score:
-    INTERNVL_DUAL_REF_ROOT/<ref_path>; missing -> gray 0.5 placeholder. opa_mb=1 for the 26B dual
-    reward, so this returns a single ref; the scorer resizes to 448 internally, so native size is fine."""
-    import torchvision.transforms.functional as _TF
-    ref_root = os.environ.get("INTERNVL_DUAL_REF_ROOT", "")
-    _allow_gray = os.environ.get("INTERNVL_DUAL_ALLOW_GRAY", "0") == "1"
-    imgs = []
-    for rp in ref_paths:
-        full = os.path.join(ref_root, rp) if (ref_root and rp) else ""
-        if full and os.path.exists(full):
-            imgs.append(_TF.to_tensor(Image.open(full).convert("RGB")))  # [3,H,W] in [0,1]
-        elif _allow_gray:
-            imgs.append(torch.full((3, side, side), 0.5))  # debug-only, opt-in
-        else:
-            raise RuntimeError(
-                f"[internvl_dual] reference image missing (INTERNVL_DUAL_REF_ROOT={ref_root!r}, "
-                f"ref_path={rp!r}). Real Seedream refs are REQUIRED for the pairwise reward; a gray "
-                f"placeholder silently corrupts results. Set INTERNVL_DUAL_REF_ROOT (or "
-                f"INTERNVL_DUAL_ALLOW_GRAY=1 for plumbing/debug only).")
-    return torch.stack(imgs).to(device)  # opa_mb=1 -> [1,3,H,W]
-
-
-def _reward_of_latents_grad(pipeline, scorer, kind, x_latent, prompts, ref=None):
+def _reward_of_latents_grad(pipeline, scorer, kind, x_latent, prompts):
     # Decode the Z-Image latent to [0,1] RGB (differentiable; VAE grad-ckpt bounds decode memory),
     # then score with the generic per-reward differentiable path. zimage_decode replaces SD3's
     # _decode01; the scoring math is identical.
-    return _reward_scores_grad(scorer, kind, zimage_decode(pipeline.vae, x_latent), prompts, ref=ref)
+    return _reward_scores_grad(scorer, kind, zimage_decode(pipeline.vae, x_latent), prompts)
 
 
 @torch.no_grad()
@@ -255,13 +201,12 @@ def _reward_of_latents(pipeline, scorer, kind, x_latent, prompts):
 
 
 def _opa_tr_step(pipeline, scorer, kind, y0, prompts, rho, n_ascent, eta, direction,
-                 dir_mode="grad", x_end=None, ref=None, first_grad=None):
+                 dir_mode="grad", x_end=None, first_grad=None):
     """OPA target: trust-region step (+1 ascent / -1 descent) at the low-noise x0 anchor y0.
 
     Reused verbatim from the SD3 OPA trainer (only _reward_of_latents_grad now decodes via the
     Z-Image VAE). dir_mode: 'grad' (the method = training-reward gradient) | 'rand' (attribution
-    control) | 'residual' (denoising residual x_end-y0, ATC-style). No sampler is invoked here.
-    `ref` (per-prompt reference images) is required only for pairwise kinds (internvl_dual)."""
+    control) | 'residual' (denoising residual x_end-y0, ATC-style). No sampler is invoked here."""
     x0 = y0.detach().float()
     budget = (rho * x0.flatten(1).norm(dim=1)).view(-1, 1, 1, 1)
     step_len = eta * budget / max(n_ascent, 1)
@@ -281,7 +226,7 @@ def _opa_tr_step(pipeline, scorer, kind, y0, prompts, rho, n_ascent, eta, direct
                 g = first_grad  # Shared y0 gradient is identical for positive/negative first steps.
             else:
                 x = x.detach().requires_grad_(True)
-                r = _reward_of_latents_grad(pipeline, scorer, kind, x, prompts, ref=ref)
+                r = _reward_of_latents_grad(pipeline, scorer, kind, x, prompts)
                 (g,) = torch.autograd.grad(r.sum(), x)
                 profiling.reward_bwd_inc()  # §6: reward-gradient backward (OPA trust-region ascent/descent)
         else:
@@ -337,11 +282,7 @@ class TextPromptDataset(Dataset):
         return len(self.prompts)
 
     def __getitem__(self, idx):
-        line = self.prompts[idx]
-        if "\t" in line:  # internvl_dual: "prompt<TAB>ref_path" -> carry the reference in metadata
-            prompt, ref_path = line.split("\t", 1)
-            return {"prompt": prompt, "metadata": {"ref_path": ref_path}}
-        return {"prompt": line, "metadata": {}}
+        return {"prompt": self.prompts[idx], "metadata": {}}
 
     @staticmethod
     def collate_fn(examples):
@@ -526,33 +467,6 @@ def main(_):
         logger.info(f"[diff-bridge] policy rank={rank} policy_world_size={world_size} "
                     f"(heavy diff reward server=rank {_server_rank})")
 
-    # --- INTERNVL_BRIDGE (gated): the 26B InternVL rewards (internvl_t2i pointwise / internvl_dual
-    # pairwise) run on a dedicated 2-GPU-SHARDED reward server (the 26B is too big to co-locate on the
-    # 6B Z-Image DiT). Same policy/server split as the diff bridge, but the server owns TWO GPUs
-    # (cuda:6,7). Reuses diffusionopsd.internvl_bridge (the SD3.5-M bridge; base-model-agnostic -- it only
-    # ships [B,3,H,W] images in [0,1] and returns reward+grad, so the Z-Image decode path is unchanged).
-    # Mutually exclusive with the diff bridge (disjoint rewards). Server RETURNS before touching
-    # policy/optimizer/data. Off (or a co-located reward) => byte-identical to the light path. ---
-    _internvl_bridge_active = bridge_enabled() and list(config.reward_fn.keys())[0] in ("internvl_t2i", "internvl_dual")
-    if _internvl_bridge_active:
-        from diffusionopsd.internvl_bridge import (
-            make_bridge_groups as _iv_make_groups, is_server_rank as _iv_is_server,
-            RewardServer as _IVRewardServer, bridge_server_devices as _iv_server_devices,
-            policy_group as _iv_policy_group,
-        )
-        _iv_make_groups(world_size)  # ALL ranks call this (new_group is a world collective)
-        if _iv_is_server(rank):
-            _iv_devs = _iv_server_devices(local_rank)   # [6,7] on a real 8-GPU node (2-GPU shard of the 26B)
-            server = _IVRewardServer(_iv_devs[0], _iv_devs, reward_kind=list(config.reward_fn.keys())[0])
-            server.serve(n_policy=world_size - 1)        # blocks until every policy rank sends CMD_SHUTDOWN
-            cleanup_distributed()
-            return
-        POLICY_GROUP = _iv_policy_group()               # DDP + all policy collectives use this subgroup
-        _iv_server_rank = world_size - 1
-        world_size = world_size - 1                     # policy world size drives sampler counts + batch math
-        logger.info(f"[internvl-bridge] policy rank={rank} policy_world_size={world_size} "
-                    f"(internvl-26B reward server=rank {_iv_server_rank})")
-
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
     config.run_name = (config.run_name + "_" + unique_id) if config.run_name else unique_id
 
@@ -593,14 +507,11 @@ def main(_):
         raise ValueError("opsd.opa=1 requires opsd.train_state='rollout' (on-policy z_q states).")
     # hpsv3/deqa become differentiable-trainable ONLY when routed to the diff bridge; still rejected
     # co-located (they OOM next to the 6B DiT). imagereward stays co-located (NOT added here).
-    _allowed_diff_rewards = (OPSD_ZIMAGE_DIFF_REWARDS
-                             + (("hpsv3", "deqa") if _diff_bridge_active else ())
-                             + (("internvl_t2i", "internvl_dual") if _internvl_bridge_active else ()))
+    _allowed_diff_rewards = OPSD_ZIMAGE_DIFF_REWARDS + (("hpsv3", "deqa") if _diff_bridge_active else ())
     if ri_opa and opa_kind not in _allowed_diff_rewards:
         raise ValueError(
             f"Z-Image OPA supports differentiable rewards {_allowed_diff_rewards}; got "
-            f"'{opa_kind}'. Heavy rewards hpsv3/deqa need ZIMAGE_HEAVY_DIFF_BRIDGE=1 and the 26B "
-            f"internvl_t2i/internvl_dual need INTERNVL_BRIDGE=1 (their internal reward server).")
+            f"'{opa_kind}'. Heavy rewards hpsv3/deqa need ZIMAGE_HEAVY_DIFF_BRIDGE=1.")
     if ri_opa and ri_opa_cert:
         # The SD3 certification used an EXACT dpm2 suffix continuation. Z-Image uses FlowMatchEuler;
         # a faithful cert would force the action at z_q then run the deterministic Euler suffix and
@@ -708,12 +619,6 @@ def main(_):
             ri_scorer = None
             if is_main_process(rank):
                 logger.info(f"[diff-bridge] {opa_kind} grad reward served remotely; no local scorer on policy ranks")
-        elif _internvl_bridge_active and opa_kind in ("internvl_t2i", "internvl_dual"):
-            # 26B internvl grad reward lives on the 2-GPU bridge server; _reward_scores_grad routes it
-            # remotely (remote_reward_scores / remote_reward_scores_pair), so load NO local scorer here.
-            ri_scorer = None
-            if is_main_process(rank):
-                logger.info(f"[internvl-bridge] {opa_kind} grad reward served remotely; no local scorer on policy ranks")
         else:
             ri_scorer = _load_reward_scorer(opa_kind, device)  # frozen differentiable scorer for the training reward
         # VAE decode still runs LOCALLY (decode->image shipped to server), so grad-ckpt it regardless.
@@ -768,7 +673,6 @@ def main(_):
         samples_data_list = []
         epoch_prompt_embeds = []
         epoch_prompts_text = []
-        epoch_ref_paths = []     # internvl_dual OPA: per-sample ref image path, co-aligned with prompts
         images = None
         prompts = None
 
@@ -779,8 +683,6 @@ def main(_):
                 train_sampler.set_epoch(epoch * config.sample.num_batches_per_epoch + i)
             prompts, prompt_metadata = next(train_iter)
             epoch_prompts_text.extend(list(prompts))
-            epoch_ref_paths.extend([(m.get("ref_path", "") if isinstance(m, dict) else "")
-                                    for m in prompt_metadata])  # internvl_dual: ref path per sample
 
             prompt_embeds_list = encode_prompts_list(pipeline, prompts, device)
             prompt_ids = pipeline.tokenizer(prompts, padding="max_length", max_length=256,
@@ -913,10 +815,6 @@ def main(_):
             xi = latents_clean_local[s:e].float()
             emb = [epoch_prompt_embeds[int(k)] for k in collated_samples["embed_idx"][s:e].tolist()]
             prm = epoch_prompts_text[s:e]
-            # internvl_dual (pairwise) OPA ascent needs the per-prompt reference image (opa_mb=1);
-            # pointwise kinds pass ref=None. INTERNVL_DUAL_REF_ROOT/<ref_path>, gray 0.5 fallback.
-            opa_ref = (_load_ref_images(epoch_ref_paths[s:e], int(config.resolution), device)
-                       if opa_kind == "internvl_dual" else None)
             with torch.no_grad(), torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 transformer_ddp.module.set_adapter("old")
                 v_old_q = zimage_v(pipeline.transformer, zq, sig_q, emb)
@@ -929,13 +827,13 @@ def main(_):
             opa_g0 = None
             if opa_dir_mode == "grad" and opa_n_ascent > 0:  # n_ascent=0 => _opa_tr_step does no ascent, so don't pay/count g0
                 _xg = y0.detach().float().requires_grad_(True)
-                _rg = _reward_of_latents_grad(pipeline, ri_scorer, opa_kind, _xg, prm, ref=opa_ref)
+                _rg = _reward_of_latents_grad(pipeline, ri_scorer, opa_kind, _xg, prm)
                 (opa_g0,) = torch.autograd.grad(_rg.sum(), _xg)
                 profiling.reward_bwd_inc()  # §6: the shared y0 reward-gradient backward
             y_plus = _opa_tr_step(pipeline, ri_scorer, opa_kind, y0, prm, opa_rho, opa_n_ascent, opa_eta,
-                                  +1.0, opa_dir_mode, xi, ref=opa_ref, first_grad=opa_g0)
+                                  +1.0, opa_dir_mode, xi, first_grad=opa_g0)
             y_minus = _opa_tr_step(pipeline, ri_scorer, opa_kind, y0, prm, opa_rho, opa_n_ascent, opa_eta,
-                                   -1.0, opa_dir_mode, xi, ref=opa_ref, first_grad=opa_g0)
+                                   -1.0, opa_dir_mode, xi, first_grad=opa_g0)
             # no-cert fast path: accept both dual targets directly.
             opa_ap[s:e] = 1.0
             opa_am[s:e] = 1.0
@@ -1089,11 +987,6 @@ def main(_):
         # rendezvous on the gloo barrier before tearing down the process groups.
         from diffusionopsd.zimage_heavy_diff_bridge import bridge_client_shutdown
         bridge_client_shutdown()
-    if _internvl_bridge_active:
-        # Same handshake for the 26B internvl reward server (only policy ranks reach here; the server
-        # rank exited its serve loop + cleanup_distributed at the top of main()).
-        from diffusionopsd.internvl_bridge import bridge_client_shutdown as _iv_client_shutdown
-        _iv_client_shutdown()
     cleanup_distributed()
 
 

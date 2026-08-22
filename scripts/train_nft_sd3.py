@@ -92,11 +92,7 @@ class TextPromptDataset(Dataset):
         return len(self.prompts)
 
     def __getitem__(self, idx):
-        line = self.prompts[idx]
-        if "\t" in line:  # internvl_dual: "prompt<TAB>ref_path" -> carry the reference in metadata
-            prompt, ref_path = line.split("\t", 1)
-            return {"prompt": prompt, "metadata": {"ref_path": ref_path}}
-        return {"prompt": line, "metadata": {}}
+        return {"prompt": self.prompts[idx], "metadata": {}}
 
     @staticmethod
     def collate_fn(examples):
@@ -456,9 +452,7 @@ def main(_):
     pipeline.text_encoder_2.to(device, dtype=text_encoder_dtype)
     pipeline.text_encoder_3.to(device, dtype=text_encoder_dtype)
 
-    # For memory-tight rewards (e.g. the 26B InternVL), the NFT training-step DiT forward+backward
-    # coexists with the resident reward model -> OOM by a hair (train_nft_sd3:958). Env-gated SD3
-    # transformer gradient-checkpointing frees the needed GBs (only slows the runs that set it).
+    # Optional transformer gradient checkpointing reduces peak memory for heavyweight rewards.
     if os.environ.get("SD3_TRANSFORMER_GRADCKPT", "0") == "1":
         try:
             pipeline.transformer.enable_gradient_checkpointing()

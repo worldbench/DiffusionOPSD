@@ -1,12 +1,6 @@
-"""Reward registry used by all public trainers and evaluators.
-
-The registry intentionally contains exactly the seven public rewards reported
-in the paper plus the three internal evaluators retained for provenance.
-"""
+"""Reward registry used by all public trainers and evaluators."""
 
 from __future__ import annotations
-
-import os
 
 from PIL import Image
 import torch
@@ -21,7 +15,6 @@ PUBLIC_REWARDS = {
     "hpsv3",
     "deqa",
 }
-INTERNAL_REWARDS = {"altclip", "internvl_t2i", "internvl_dual"}
 
 
 def _as_tensor(images):
@@ -93,103 +86,6 @@ def imagereward_score(device):
     def _fn(images, prompts, metadata):
         del metadata
         return scorer(prompts, images), {}
-
-    return _fn
-
-
-def altclip_score(device):
-    """Internal evaluator: requires the unreleased fine-tuned AltCLIP weights."""
-
-    from diffusionopsd.altclip_scorer import AltCLIPScorer
-
-    scorer = AltCLIPScorer(device=device, dtype=torch.float32)
-
-    def _fn(images, prompts, metadata):
-        del metadata
-        return scorer(_as_tensor(images), prompts), {}
-
-    return _fn
-
-
-def internvl_t2i_score(device):
-    """Internal 26B pointwise evaluator; checkpoint is not part of this release."""
-
-    from diffusionopsd.internvl_bridge import bridge_enabled
-
-    if bridge_enabled():
-        from diffusionopsd.internvl_bridge import remote_reward_scores_forward
-
-        def _fn(images, prompts, metadata):
-            del metadata
-            scores = remote_reward_scores_forward(_as_tensor(images).to(device).float(), prompts)
-            return scores, {}
-
-        return _fn
-
-    from diffusionopsd.internvl_t2i_scorer import get_internvl_t2i_scorer
-
-    scorer = get_internvl_t2i_scorer(device=device)
-
-    def _fn(images, prompts, metadata):
-        del metadata
-        return scorer(_as_tensor(images), prompts), {}
-
-    return _fn
-
-
-def internvl_dual_score(device):
-    """Internal pairwise evaluator P(generated > reference).
-
-    References are read from ``INTERNVL_DUAL_REF_ROOT`` using the ``ref_path``
-    entries in prompt metadata. Missing references fail closed. The optional
-    gray image fallback exists only for explicitly enabled plumbing tests and
-    must never be used for reported results.
-    """
-
-    import torchvision.transforms.functional as transforms
-
-    from diffusionopsd.internvl_bridge import bridge_enabled
-
-    bridged = bridge_enabled()
-    if bridged:
-        from diffusionopsd.internvl_bridge import remote_reward_scores_pair_forward
-
-        scorer = None
-    else:
-        from diffusionopsd.internvl_dual_scorer import get_internvl_dual_scorer
-
-        scorer = get_internvl_dual_scorer(device=device)
-
-    ref_root = os.environ.get("INTERNVL_DUAL_REF_ROOT", "")
-    allow_gray = os.environ.get("INTERNVL_DUAL_ALLOW_GRAY", "0") == "1"
-
-    def _load_ref(ref_path: str, side: int):
-        full = os.path.join(ref_root, ref_path) if ref_root and ref_path else ""
-        if full and os.path.exists(full):
-            return transforms.to_tensor(Image.open(full).convert("RGB"))
-        if not allow_gray:
-            raise RuntimeError(
-                "Internal pairwise reference image is missing. Provide a prompt file with "
-                "prompt<TAB>ref_path entries and set INTERNVL_DUAL_REF_ROOT. "
-                "INTERNVL_DUAL_ALLOW_GRAY=1 is for plumbing tests only."
-            )
-        return torch.full((3, side, side), 0.5)
-
-    def _fn(images, prompts, metadata):
-        images = _as_tensor(images).float()
-        side = int(images.shape[-1])
-        scores = []
-        for index, prompt in enumerate(prompts):
-            item = metadata[index] if metadata and isinstance(metadata[index], dict) else {}
-            ref = _load_ref(item.get("ref_path", ""), side).unsqueeze(0).to(images.device)
-            if bridged:
-                score = remote_reward_scores_pair_forward(
-                    images[index:index + 1].to(device).float(), ref.to(device).float(), [prompt]
-                )
-            else:
-                score = scorer(images[index:index + 1], ref, [prompt])
-            scores.append(score)
-        return torch.cat(scores).cpu(), {}
 
     return _fn
 
@@ -273,9 +169,6 @@ def multi_score(device, score_dict):
         "imagereward": imagereward_score,
         "hpsv3": hpsv3_score,
         "deqa": deqa_score,
-        "altclip": altclip_score,
-        "internvl_t2i": internvl_t2i_score,
-        "internvl_dual": internvl_dual_score,
     }
     unknown = sorted(set(score_dict) - set(factories))
     if unknown:

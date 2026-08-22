@@ -1,8 +1,4 @@
-"""Paper-matched ReFL configurations for the seven public evaluators.
-
-The internal AltCLIP/VLM evaluator variants are intentionally not exposed by
-the public launcher; their adapters remain annotated in ``src/``.
-"""
+"""Paper-matched ReFL configurations for the seven public evaluators."""
 
 from __future__ import annotations
 
@@ -80,8 +76,6 @@ def _refl_block(backbone: str, reward: str, policy_world_size: int, launch_world
         "calibration_manifest_path": str(ROOT / "data" / "pickapic" / "train.txt"),
         "curve_manifest_path": DRAWBENCH_PROMPTS,
         "final_manifest_path": DRAWBENCH_PROMPTS,
-        "pairwise_train_ref_root": "",
-        "pairwise_eval_ref_root": "",
         # Every seed block is disjoint and recorded in the emitted manifests.
         "seed": 20260814,
         "train_prompt_seed": 2026081400,

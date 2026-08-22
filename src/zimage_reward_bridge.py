@@ -3,7 +3,7 @@
 Purpose
 -------
 The Z-Image-Turbo ``nft`` trainer co-locates the reward scorer on every policy GPU. That fits the
-light scorers (hpsv2/clip/pick/aes/altclip/imagereward) next to the 6 B Z-Image DiT, but the heavy
+light public scorers next to the 6 B Z-Image DiT, but the heavy
 VLM rewards OOM: ``hpsv3`` (Qwen2-VL-7B + ranknet, ~14 GB bf16) and ``deqa`` (mPLUG-Owl2-8B, ~16 GB
 bf16) cannot be colocated reliably with the 6 B DiT. This module hosts the heavy
 scorer on a dedicated SERVER rank (its own GPU) and lets the policy ranks obtain scalar rewards over
@@ -15,24 +15,20 @@ the wire:
 Everything here is INERT unless ``ZIMAGE_HEAVY_BRIDGE=1``; the trainer only wires it in behind that
 flag, so co-located (light-reward) runs are byte-for-byte unchanged.
 
-Why simpler than ``internvl_bridge``
-------------------------------------
 ``nft`` uses the reward ONLY as a forward, no-grad scalar (group-relative advantage); it never
 backprops through the reward. So this bridge ships images -> scalar rewards and NEVER computes or
-returns a gradient. No ``autograd.Function``, no grad tensor on the wire, one scoring command. The
-``internvl_bridge`` (opsd/ReFL) is the differentiable analogue and stays separate.
+returns a gradient. No ``autograd.Function``, no grad tensor on the wire, one scoring command.
 
-GPU layout (mirrors the ``internvl_bridge`` NPROC=7 pattern; 7 B/8 B fit on ONE GPU so the server is
-single-GPU rather than 2-GPU-sharded)
-------------------------------------------------------------------------------------------------
+GPU layout (the 7 B/8 B public scorers fit on one server GPU)
+------------------------------------------------------------
     torchrun --nproc_per_node=7  ->  ranks 0..5 = policy (cuda:0..5), rank 6 = server (cuda:6)
 The policy world size is therefore 6; the trainer + config batch math use n_policy_gpus = 6 (which
 keeps the K=12 group recipe's batch search valid — 7 policy GPUs would not, since gcd(7,12)=1).
 Overridable: ``ZIMAGE_HEAVY_BRIDGE_SERVER_RANK`` (default last rank),
 ``ZIMAGE_HEAVY_BRIDGE_SERVER_DEVICES`` (default ``[local_rank]``, single GPU).
 
-Two process groups (identical rationale to internvl_bridge)
------------------------------------------------------------
+Two process groups
+------------------
 * ``_GLOO_GROUP``   — gloo over ALL ranks: the small control header (recv-from-ANY on the server) +
   the prompt string list + the shutdown barrier. NCCL cannot send Python objects nor recv-from-any.
 * ``_POLICY_GROUP`` — NCCL over policy ranks only: ALL policy DDP/all_gather/broadcast/all_reduce/
@@ -120,8 +116,8 @@ def make_bridge_groups(world_size: int):
 
 def bridge_server_devices(local_rank: int) -> List[int]:
     """GPU index(es) the server hosts the scorer on. Default: single ``[local_rank]`` — a 7 B/8 B
-    scorer in bf16 (~14-16 GB) fits comfortably on one 80 GB card, so (unlike the 26 B internvl
-    server) no multi-GPU shard is needed. Overridable via ZIMAGE_HEAVY_BRIDGE_SERVER_DEVICES="6,7"."""
+    scorer in bf16 (~14-16 GB) fits comfortably on one 80 GB card. Overridable via
+    ZIMAGE_HEAVY_BRIDGE_SERVER_DEVICES="6,7"."""
     env = os.environ.get("ZIMAGE_HEAVY_BRIDGE_SERVER_DEVICES", "")
     if env.strip():
         return [int(x) for x in env.split(",") if x.strip() != ""]
