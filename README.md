@@ -6,7 +6,7 @@
 
 <p align="center">
   Wei Zhou<sup>1,2</sup>, Xiongwei Zhu<sup>1</sup>, Lingdong Kong<sup>2</sup>, Bo Chen<sup>1</sup>, Lei Zhang<sup>3</sup>, Yongyuan Liang<sup>4</sup>, Xiaoxia Hou<sup>1</sup>, Ye Tian<sup>5</sup>,<br>
-  Xian Sun<sup>6</sup>, Yingshuo Wang<sup>7</sup>, Linfeng Li<sup>2</sup>, Shengqiong Wu<sup>8</sup>, Leigang Qu<sup>2</sup>, Feng Li<sup>9</sup>, Wei Liu<sup>1,†</sup>, Julian McAuley<sup>3</sup>, Tat-Seng Chua<sup>2</sup>
+  Xian Sun<sup>6</sup>, Yingshuo Wang<sup>7</sup>, Linfeng Li<sup>2</sup>, Shengqiong Wu<sup>8</sup>, Leigang Qu<sup>2</sup>, Feng Li<sup>9</sup>,<br> Wei Liu<sup>1,†</sup>, Julian McAuley<sup>3</sup>, Tat-Seng Chua<sup>2</sup>
 </p>
 <p align="center">
   <a href="https://seed.bytedance.com/"><img src="https://www.google.com/s2/favicons?domain=seed.bytedance.com&sz=64" width="16" height="16" alt="ByteDance Seed icon"> <sup>1</sup> ByteDance Seed</a>
@@ -26,7 +26,7 @@
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="https://hkust.edu.hk/"><img src="https://www.google.com/s2/favicons?domain=hkust.edu.hk&sz=64" width="16" height="16" alt="HKUST icon"> <sup>9</sup> HKUST</a>
 </p>
-<p align="center"><sub><sup>†</sup> Corresponding author</sub></p>
+<p align="center"><sub><sup>†</sup> Corresponding Author</sub></p>
 <p align="center">
   <a href="#citation">
     <img src="https://img.shields.io/badge/arXiv-coming_soon-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv Paper">
