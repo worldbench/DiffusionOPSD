@@ -47,7 +47,7 @@
 
 <br><br>
 
-<img src="assets/training_curves.png" width="92%" alt="Training and held-out quality curves">
+<img src="assets/qualitative_gallery.png" width="100%" alt="DiffusionOPSD qualitative gallery">
 
 </div>
 
@@ -69,6 +69,8 @@ This separation makes **target construction** and **finite realization** indepen
 - **Continually refreshed supervision.** An EMA behavior policy regenerates trajectories, anchors, and targets after each outer update.
 - **Two distinct backbones.** The release supports SD3.5-M at 512² and the native few-step Z-Image-Turbo regime at 1024².
 - **Single- and mixed-reward training.** Public presets cover all seven open-weight evaluators and arbitrary positive weighted sums; the paper example uses PickScore/26 + CLIPScore + HPSv2.1.
+
+<img src="assets/training_curves.png" width="92%" alt="Training and held-out quality curves">
 
 ---
 
@@ -177,14 +179,6 @@ The paper isolates target direction, implementation sensitivity, and train/evalu
 
 <p align="center">
   <img src="assets/ablation_controls.png" width="100%" alt="DiffusionOPSD target, implementation, and CFG ablations">
-</p>
-
----
-
-## 🖼️ Qualitative Gallery
-
-<p align="center">
-  <img src="assets/qualitative_gallery.png" width="68%" alt="DiffusionOPSD qualitative gallery">
 </p>
 
 ---
