@@ -1,3 +1,6 @@
+*Note: This is an external implementation of the algorithm in the following paper:*
+
+
 <div align="center">
 
 # ✨ DiffusionOPSD: On-Policy Self-Distillation in Diffusion Models ✨
@@ -28,17 +31,11 @@
 </p>
 <p align="center"><sub><sup>†</sup> Corresponding Author</sub></p>
 <p align="center">
-  <a href="#citation">
-    <img src="https://img.shields.io/badge/arXiv-coming_soon-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv Paper">
+  <a href="https://arxiv.org/abs/2608.24646">
+    <img src="https://img.shields.io/badge/arXiv-2608.24646-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv Paper">
   </a>
   <a href="https://diffusionopsd.github.io/">
     <img src="https://img.shields.io/badge/Project-Page-3B82F6?style=for-the-badge&logo=githubpages&logoColor=white" alt="Project Page">
-  </a>
-  <a href="https://github.com/worldbench/DiffusionOPSD">
-    <img src="https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Code">
-  </a>
-  <a href="https://huggingface.co/WeiChow/DiffusionOPSD">
-    <img src="https://img.shields.io/badge/Models-Hugging_Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Hugging Face Models">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-16A34A?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 License">
